@@ -1,0 +1,13 @@
+[package]
+name = "image-pre-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+csv = "1.3"
+image-proc = { path = "../image-proc" }
+opencv = { workspace = true, features = ["imgcodecs", "imgproc"] }
+rand = "0.8"
+walkdir = "2"

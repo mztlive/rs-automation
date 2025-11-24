@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "automation"
+, "image-pre-cli", "image-proc", "ml", "ocr"]
+resolver = "2"
+
+
+[workspace.dependencies]
+opencv = { version = "0.95.1", features = ["clang-runtime"] }
