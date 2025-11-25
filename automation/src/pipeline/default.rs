@@ -77,7 +77,7 @@ pub fn default_pipeline(request: &BookingRequest) -> Pipeline {
         })
         .step(DebugStep::new("点击了影院"))
         .step(SleepMs(3000))
-        .step(MoveMouse::to_grid(GridPos::BottomRight))
+        .step(MoveMouse::to_grid(GridPos::BottomCenter))
         .step(ScrollThenOcrLoop {
             patterns: request.show_time.clone(),
             max_attempts: 6,
@@ -87,4 +87,13 @@ pub fn default_pipeline(request: &BookingRequest) -> Pipeline {
             case_sensitive: false,
         })
         .step(DebugStep::new("选择了场次时间"))
+        .step(LocateSeatByColor {
+            target_row: 1,
+            target_cols: vec![4, 5],
+            // 示例裁剪范围，按实际截图可调整
+            roi: Some((60, 360, 300, 570)),
+            click: true,
+            row_tolerance_px: None,
+        })
+        .step(SleepMs(3000))
 }
