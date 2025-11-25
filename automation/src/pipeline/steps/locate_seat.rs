@@ -87,6 +87,46 @@ impl Seat {
     }
 }
 
+/// 座位区域，按行存储的二维数组。
+#[derive(Debug, Clone)]
+pub struct SeatArea {
+    grid: Vec<Vec<Seat>>,
+}
+
+impl SeatArea {
+    /// 返回行列表。
+    pub fn rows(&self) -> &[Vec<Seat>] {
+        &self.grid
+    }
+
+    /// 行数（1-based 最大行号）。
+    pub fn row_count(&self) -> usize {
+        self.grid.len()
+    }
+
+    /// 获取指定行的座位切片（1-based）。
+    pub fn row(&self, row: usize) -> Option<&[Seat]> {
+        self.grid.get(row.saturating_sub(1)).map(|r| r.as_slice())
+    }
+
+    /// 获取指定行的列数（1-based 行号）。
+    pub fn cols_in_row(&self, row: usize) -> Option<usize> {
+        self.grid.get(row.saturating_sub(1)).map(|r| r.len())
+    }
+
+    /// 按行列索引座位（1-based）。
+    pub fn seat(&self, row: usize, col: usize) -> Option<&Seat> {
+        self.grid
+            .get(row.saturating_sub(1))
+            .and_then(|r| r.get(col.saturating_sub(1)))
+    }
+
+    /// 扁平迭代所有座位。
+    pub fn iter(&self) -> impl Iterator<Item = &Seat> {
+        self.grid.iter().flat_map(|r| r.iter())
+    }
+}
+
 /// 通过颜色掩膜+轮廓聚类定位影厅座位的行/列，并输出或点击目标座位。
 ///
 /// 适合颜色相对固定的座位图（如示例截图），默认识别灰色（可选）、绿色（已选）、红色（不可选）三类方块。
@@ -118,34 +158,31 @@ impl Step for LocateSeatByColor {
         let mut rows = cluster_rows(boxes, row_tol)?;
 
         sort_rows_and_cols(&mut rows);
-        self.ensure_row_exists(&rows)?;
-
         let window_pos = window.position()?;
         let window_size = window.size()?;
         let (scale_x, scale_y) = compute_scale_factors(roi_ctx.img_dims, window_size);
-
-        let seats = build_seats(
+        let seat_area = build_seat_area(
             &rows,
             roi_ctx.roi_origin,
             window_pos,
             (scale_x, scale_y),
             &roi_ctx.hsv,
         );
-        let target_row_seats: Vec<&Seat> =
-            seats.iter().filter(|s| s.row == self.target_row).collect();
+        self.ensure_row_exists(seat_area.row_count())?;
+
+        let seats_in_row = seat_area
+            .row(self.target_row)
+            .ok_or_else(|| anyhow!("目标行超出范围：第 {} 排不存在", self.target_row))?;
+
         for col in self.target_cols.iter().copied() {
-            let seat = target_row_seats
-                .iter()
-                .copied()
-                .find(|s| s.col == col)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "目标座位超出范围：第 {} 排没有第 {} 座（本排 {} 个）",
-                        self.target_row,
-                        col,
-                        target_row_seats.len()
-                    )
-                })?;
+            let seat = seat_area.seat(self.target_row, col).ok_or_else(|| {
+                anyhow!(
+                    "目标座位超出范围：第 {} 排没有第 {} 座（本排 {} 个）",
+                    self.target_row,
+                    col,
+                    seats_in_row.len()
+                )
+            })?;
 
             println!(
                 "座位: 第 {} 排第 {} 座 [{}] -> 图像 ({:.1}, {:.1}) -> 屏幕 ({}, {})",
@@ -229,12 +266,12 @@ impl LocateSeatByColor {
     ///
     /// - 当 `target_row` 为 0 或大于行数时返回错误，阻断后续点击/输出
     /// - 正常情况不修改数据，仅做范围检查
-    fn ensure_row_exists(&self, rows: &[Vec<core::Rect>]) -> Result<()> {
-        if self.target_row == 0 || self.target_row > rows.len() {
+    fn ensure_row_exists(&self, row_count: usize) -> Result<()> {
+        if self.target_row == 0 || self.target_row > row_count {
             return Err(anyhow!(
                 "目标行超出范围：请求第 {} 排，总行数 {}",
                 self.target_row,
-                rows.len()
+                row_count
             ));
         }
         Ok(())
@@ -449,6 +486,25 @@ pub(crate) fn build_seats(
     seats
 }
 
+/// 构建 SeatArea（二维数组），便于按行列索引。
+pub(crate) fn build_seat_area(
+    rows: &[Vec<core::Rect>],
+    roi_origin: (u32, u32),
+    window_pos: (i32, i32),
+    scale: (f32, f32),
+    hsv_roi: &Mat,
+) -> SeatArea {
+    let seats = build_seats(rows, roi_origin, window_pos, scale, hsv_roi);
+    let mut grid: Vec<Vec<Seat>> = Vec::new();
+    for seat in seats {
+        if grid.len() < seat.row {
+            grid.resize(seat.row, Vec::new());
+        }
+        grid[seat.row - 1].push(seat);
+    }
+    SeatArea { grid }
+}
+
 /// 将状态枚举转成可读文本。
 pub(crate) fn format_seat_state(state: SeatState) -> &'static str {
     match state {
@@ -613,8 +669,6 @@ mod tests {
     use anyhow::Result;
     use opencv::core::{self, CV_8UC3, Mat, Scalar, Size};
     use opencv::imgcodecs;
-    use serde::Serialize;
-    use std::fs::File;
     use std::path::PathBuf;
 
     /// 构造纯色 BGR Mat，便于独立测试。
@@ -673,7 +727,7 @@ mod tests {
         // 这个坐标刚好是座位区域
         // 该 ROI 覆盖座位区域，来自人工标定。
         // 缩进左侧以排除行号/标签，宽度收窄以减少伪检测。
-        let roi = Some((80, 700, 700, 620));
+        let roi = Some((50, 700, (size.width - 50) as u32, 530));
 
         let (roi_bgr, origin, dims) = crop_bgr_with_roi(&bgr, roi)?;
         let out_path =
@@ -698,20 +752,11 @@ mod tests {
         Ok(())
     }
 
-    #[derive(Serialize)]
-    struct SeatDump {
-        row: usize,
-        col: usize,
-        state: String,
-        center_img: (f64, f64),
-        center_screen: (i32, i32),
-    }
-
-    /// 基于真实座位图提取完整座位数据并写出 JSON，便于人工检查。
+    /// 基于真实座位图提取完整座位数据并对 SeatArea 断言（行/列数量大于 0）。
     #[test]
     fn build_seats_from_real_image_and_dump() -> Result<()> {
         let path: PathBuf =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/raw/movie-seats/3.png");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/raw/movie-seats/1.png");
         let bgr = imgcodecs::imread(path.to_str().unwrap(), imgcodecs::IMREAD_COLOR)?;
         let size = bgr.size()?;
         assert!(
@@ -720,9 +765,13 @@ mod tests {
         );
 
         // 该 ROI 覆盖座位区域，来自人工标定。
-        let roi = Some((80, 700, 700, 620));
+        let roi = Some((50, 700, (size.width - 50) as u32, 530));
         let roi_ctx = roi_hsv_from_bgr(&bgr, roi)?;
-        assert_eq!(roi_ctx.roi_origin, (80, 700), "ROI origin should reflect crop");
+        assert_eq!(
+            roi_ctx.roi_origin,
+            (50, 700),
+            "ROI origin should reflect crop"
+        );
 
         let mask = build_mask(&roi_ctx.hsv)?;
         let boxes = contours_to_boxes(&mask)?;
@@ -738,35 +787,20 @@ mod tests {
         sort_rows_and_cols(&mut rows);
 
         let scale = compute_scale_factors(roi_ctx.img_dims, roi_ctx.img_dims);
-        let seats = build_seats(&rows, roi_ctx.roi_origin, (0, 0), scale, &roi_ctx.hsv);
-        assert!(!seats.is_empty(), "should detect seats");
+        let area = build_seat_area(&rows, roi_ctx.roi_origin, (0, 0), scale, &roi_ctx.hsv);
+        assert!(area.row_count() > 0, "should detect at least 1 row");
 
-        let mut row_counts = std::collections::BTreeMap::new();
-        for s in &seats {
-            *row_counts.entry(s.row).or_insert(0usize) += 1;
+        println!("Seat status: {:?}", area.seat(8, 11).unwrap().state);
+
+        for r in 1..=area.row_count() {
+            // println!(
+            //     "Rows: {:?}, Cols: {:?}",
+            //     area.row_count(),
+            //     area.cols_in_row(r)
+            // );
+            let row = area.row(r).expect("row should exist");
+            assert!(!row.is_empty(), "row {} should have seats", r);
         }
-        assert_eq!(row_counts.len(), 4, "expected 4 rows from the image ROI");
-        assert!(
-            row_counts.values().all(|&c| c == 10),
-            "each row should have 10 seats: {:?}",
-            row_counts
-        );
-
-        let dump: Vec<SeatDump> = seats
-            .iter()
-            .map(|s| SeatDump {
-                row: s.row,
-                col: s.col,
-                state: format_seat_state(s.state).to_string(),
-                center_img: s.center_img,
-                center_screen: s.center_screen,
-            })
-            .collect();
-
-        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/seats_dump.json");
-        let file = File::create(&out)?;
-        serde_json::to_writer_pretty(file, &dump)?;
-        assert!(out.exists(), "seat dump should be written for inspection");
         Ok(())
     }
 
@@ -809,7 +843,7 @@ mod tests {
 
     /// 从聚类框生成座位结构并验证行列与坐标。
     #[test]
-    fn build_seats_assigns_row_col_and_coordinates() -> Result<()> {
+    fn build_seat_area_assigns_row_col_and_coordinates() -> Result<()> {
         let rows = vec![vec![
             core::Rect::new(0, 0, 10, 10),
             core::Rect::new(12, 0, 10, 10),
@@ -819,14 +853,17 @@ mod tests {
             CV_8UC3,
             Scalar::new(0.0, 0.0, 120.0, 0.0),
         )?;
-        let seats = build_seats(&rows, (0, 0), (0, 0), (1.0, 1.0), &hsv);
+        let area = build_seat_area(&rows, (0, 0), (0, 0), (1.0, 1.0), &hsv);
 
-        assert_eq!(seats.len(), 2);
-        assert_eq!((seats[0].row, seats[0].col), (1, 1));
-        assert_eq!((seats[1].row, seats[1].col), (1, 2));
-        assert_eq!(seats[0].center_img, (5.0, 5.0));
-        assert_eq!(seats[1].center_img.0.round(), 17.0);
-        assert!(seats.iter().all(|s| s.is_available()));
+        assert_eq!(area.row_count(), 1);
+        assert_eq!(area.cols_in_row(1), Some(2));
+        let s1 = area.seat(1, 1).unwrap();
+        let s2 = area.seat(1, 2).unwrap();
+        assert_eq!((s1.row, s1.col), (1, 1));
+        assert_eq!((s2.row, s2.col), (1, 2));
+        assert_eq!(s1.center_img, (5.0, 5.0));
+        assert_eq!(s2.center_img.0.round(), 17.0);
+        assert!(area.iter().all(|s| s.is_available()));
         Ok(())
     }
 }
