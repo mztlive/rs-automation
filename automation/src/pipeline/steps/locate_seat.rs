@@ -40,6 +40,53 @@ use crate::{
     window::WandaWindow,
 };
 
+/// 座位状态：可选/已选/不可选/未知。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatState {
+    Available,
+    Selected,
+    Unavailable,
+    Unknown,
+}
+
+/// 座位描述，包含行列、状态以及图像/屏幕坐标。
+#[derive(Debug, Clone)]
+pub struct Seat {
+    pub row: usize,
+    pub col: usize,
+    pub state: SeatState,
+    pub bbox: core::Rect,
+    pub center_img: (f64, f64),
+    pub center_screen: (i32, i32),
+}
+
+impl Seat {
+    /// 屏幕坐标（窗口左上角为基准）。
+    pub fn screen_point(&self) -> (i32, i32) {
+        self.center_screen
+    }
+
+    /// 图像坐标（原始截图坐标系）。
+    pub fn image_point(&self) -> (f64, f64) {
+        self.center_img
+    }
+
+    /// 是否可选（灰色）。
+    pub fn is_available(&self) -> bool {
+        matches!(self.state, SeatState::Available)
+    }
+
+    /// 是否已选（绿色）。
+    pub fn is_selected(&self) -> bool {
+        matches!(self.state, SeatState::Selected)
+    }
+
+    /// 是否不可选（红色）。
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self.state, SeatState::Unavailable)
+    }
+}
+
 /// 通过颜色掩膜+轮廓聚类定位影厅座位的行/列，并输出或点击目标座位。
 ///
 /// 适合颜色相对固定的座位图（如示例截图），默认识别灰色（可选）、绿色（已选）、红色（不可选）三类方块。
@@ -77,24 +124,43 @@ impl Step for LocateSeatByColor {
         let window_size = window.size()?;
         let (scale_x, scale_y) = compute_scale_factors(roi_ctx.img_dims, window_size);
 
-        let seats = &rows[self.target_row - 1];
+        let seats = build_seats(
+            &rows,
+            roi_ctx.roi_origin,
+            window_pos,
+            (scale_x, scale_y),
+            &roi_ctx.hsv,
+        );
+        let target_row_seats: Vec<&Seat> =
+            seats.iter().filter(|s| s.row == self.target_row).collect();
         for col in self.target_cols.iter().copied() {
-            let (screen_x, screen_y, center_px) = seat_screen_point(
-                seats,
-                col,
-                self.target_row,
-                roi_ctx.roi_origin,
-                window_pos,
-                (scale_x, scale_y),
-            )?;
+            let seat = target_row_seats
+                .iter()
+                .copied()
+                .find(|s| s.col == col)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "目标座位超出范围：第 {} 排没有第 {} 座（本排 {} 个）",
+                        self.target_row,
+                        col,
+                        target_row_seats.len()
+                    )
+                })?;
 
             println!(
-                "座位: 第 {} 排第 {} 座 -> 图像 ({:.1}, {:.1}) -> 屏幕 ({}, {})",
-                self.target_row, col, center_px.0, center_px.1, screen_x, screen_y
+                "座位: 第 {} 排第 {} 座 [{}] -> 图像 ({:.1}, {:.1}) -> 屏幕 ({}, {})",
+                seat.row,
+                seat.col,
+                format_seat_state(seat.state),
+                seat.center_img.0,
+                seat.center_img.1,
+                seat.center_screen.0,
+                seat.center_screen.1
             );
 
             if self.click {
-                input::click_screen(screen_x, screen_y)?;
+                let (sx, sy) = seat.screen_point();
+                input::click_screen(sx, sy)?;
             }
         }
 
@@ -275,7 +341,7 @@ pub(crate) fn build_mask(hsv: &Mat) -> Result<Mat> {
 /// 将轮廓转换为方块并按尺寸过滤。
 ///
 /// - `find_contours` + `bounding_rect` 取外接矩形
-/// - 仅保留宽高 12–40px 的方块，减少 legend/按钮干扰
+/// - 仅保留宽高 12–80px 的方块，减少 legend/按钮干扰（适配更大座位块）
 /// - 无有效方块时返回错误，提示调整 ROI/颜色范围
 pub(crate) fn contours_to_boxes(mask: &Mat) -> Result<Vec<core::Rect>> {
     let mut contours = core::Vector::<core::Vector<core::Point>>::new();
@@ -290,7 +356,7 @@ pub(crate) fn contours_to_boxes(mask: &Mat) -> Result<Vec<core::Rect>> {
     let mut boxes: Vec<core::Rect> = Vec::new();
     for c in contours.iter() {
         let rect = imgproc::bounding_rect(&c)?;
-        if rect.width >= 12 && rect.width <= 40 && rect.height >= 12 && rect.height <= 40 {
+        if rect.width >= 12 && rect.width <= 80 && rect.height >= 12 && rect.height <= 80 {
             boxes.push(rect);
         }
     }
@@ -349,6 +415,50 @@ pub(crate) fn compute_scale_factors(img_dims: (u32, u32), window_size: (u32, u32
     )
 }
 
+/// 从聚类结果构建座位列表，包含行/列/状态及坐标。
+///
+/// - 行号、列号从 1 开始，按 `sort_rows_and_cols` 后的顺序赋值
+/// - 屏幕坐标基于 ROI 偏移、窗口位置与缩放比计算
+/// - 状态通过 ROI HSV 图的中心像素判断
+pub(crate) fn build_seats(
+    rows: &[Vec<core::Rect>],
+    roi_origin: (u32, u32),
+    window_pos: (i32, i32),
+    scale: (f32, f32),
+    hsv_roi: &Mat,
+) -> Vec<Seat> {
+    let mut seats = Vec::new();
+    for (row_idx, row) in rows.iter().enumerate() {
+        for (col_idx, rect) in row.iter().enumerate() {
+            let center_px = rect_center(rect, (roi_origin.0 as i32, roi_origin.1 as i32));
+            let logical_x = center_px.0 as f32 / scale.0;
+            let logical_y = center_px.1 as f32 / scale.1;
+            let screen_x = window_pos.0 + logical_x.round() as i32;
+            let screen_y = window_pos.1 + logical_y.round() as i32;
+
+            seats.push(Seat {
+                row: row_idx + 1,
+                col: col_idx + 1,
+                state: seat_state_from_hsv(hsv_roi, rect),
+                bbox: *rect,
+                center_img: center_px,
+                center_screen: (screen_x, screen_y),
+            });
+        }
+    }
+    seats
+}
+
+/// 将状态枚举转成可读文本。
+pub(crate) fn format_seat_state(state: SeatState) -> &'static str {
+    match state {
+        SeatState::Available => "可选",
+        SeatState::Selected => "已选",
+        SeatState::Unavailable => "不可选",
+        SeatState::Unknown => "未知",
+    }
+}
+
 /// 取指定排/列的屏幕坐标，并返回图像中心坐标。
 ///
 /// - 检查列号范围，非法时返回错误
@@ -377,20 +487,6 @@ pub(crate) fn seat_screen_point(
     let screen_x = window_pos.0 + logical_x.round() as i32;
     let screen_y = window_pos.1 + logical_y.round() as i32;
     Ok((screen_x, screen_y, center_px))
-}
-
-/// 求掩膜中非零像素的最小外接矩形，返回相对掩膜的 Rect。
-///
-/// - 掩膜全零时返回 `Ok(None)`
-/// - 否则使用 `bounding_rect` 包裹所有非零点
-pub(crate) fn mask_nonzero_bbox(mask: &Mat) -> Result<Option<core::Rect>> {
-    let mut points = core::Vector::<core::Point>::new();
-    core::find_non_zero(mask, &mut points)?;
-    if points.is_empty() {
-        return Ok(None);
-    }
-    let rect = imgproc::bounding_rect(&points)?;
-    Ok(Some(rect))
 }
 
 /// 座位颜色的 HSV 范围列表：灰/绿/红。
@@ -422,6 +518,70 @@ pub(crate) fn seat_color_ranges() -> Vec<(Scalar, Scalar)> {
     ]
 }
 
+/// 按状态拆分的 HSV 范围列表，便于分类。
+pub(crate) fn seat_state_color_ranges() -> Vec<(SeatState, (Scalar, Scalar))> {
+    vec![
+        (
+            SeatState::Available,
+            (
+                Scalar::new(0.0, 0.0, 60.0, 0.0),
+                Scalar::new(180.0, 60.0, 210.0, 0.0),
+            ),
+        ),
+        (
+            SeatState::Selected,
+            (
+                Scalar::new(60.0, 80.0, 120.0, 0.0),
+                Scalar::new(90.0, 255.0, 255.0, 0.0),
+            ),
+        ),
+        (
+            SeatState::Unavailable,
+            (
+                Scalar::new(0.0, 80.0, 120.0, 0.0),
+                Scalar::new(15.0, 255.0, 255.0, 0.0),
+            ),
+        ),
+        (
+            SeatState::Unavailable,
+            (
+                Scalar::new(165.0, 80.0, 120.0, 0.0),
+                Scalar::new(180.0, 255.0, 255.0, 0.0),
+            ),
+        ),
+    ]
+}
+
+/// 根据 ROI HSV 的中心像素推断座位状态。
+///
+/// - 中心点越界或读值失败时返回 `Unknown`
+/// - 匹配灰/绿/红范围后返回对应状态，否则 `Unknown`
+pub(crate) fn seat_state_from_hsv(hsv_roi: &Mat, rect: &core::Rect) -> SeatState {
+    let cx = rect.x + rect.width / 2;
+    let cy = rect.y + rect.height / 2;
+    if cx < 0 || cy < 0 || cx >= hsv_roi.cols() || cy >= hsv_roi.rows() {
+        return SeatState::Unknown;
+    }
+    let pixel = match hsv_roi.at_2d::<core::Vec3b>(cy, cx) {
+        Ok(p) => p,
+        Err(_) => return SeatState::Unknown,
+    };
+    let scalar = Scalar::new(pixel[0] as f64, pixel[1] as f64, pixel[2] as f64, 0.0);
+    for (state, (lower, upper)) in seat_state_color_ranges() {
+        if scalar_in_range(&scalar, &lower, &upper) {
+            return state;
+        }
+    }
+    SeatState::Unknown
+}
+
+/// 判断单个 HSV 像素是否位于给定范围。
+pub(crate) fn scalar_in_range(val: &Scalar, lower: &Scalar, upper: &Scalar) -> bool {
+    (val[0] >= lower[0] && val[0] <= upper[0])
+        && (val[1] >= lower[1] && val[1] <= upper[1])
+        && (val[2] >= lower[2] && val[2] <= upper[2])
+}
+
 /// 计算矩形的中心（加上 ROI 偏移）。
 ///
 /// - 以矩形左上角和宽高求中心
@@ -433,12 +593,28 @@ pub(crate) fn rect_center(rect: &core::Rect, offset: (i32, i32)) -> (f64, f64) {
     )
 }
 
+/// 求掩膜中非零像素的最小外接矩形，返回相对掩膜的 Rect。
+///
+/// - 掩膜全零时返回 `Ok(None)`
+/// - 否则使用 `bounding_rect` 包裹所有非零点
+pub(crate) fn mask_nonzero_bbox(mask: &Mat) -> Result<Option<core::Rect>> {
+    let mut points = core::Vector::<core::Point>::new();
+    core::find_non_zero(mask, &mut points)?;
+    if points.is_empty() {
+        return Ok(None);
+    }
+    let rect = imgproc::bounding_rect(&points)?;
+    Ok(Some(rect))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::Result;
-    use opencv::core::{self, Mat, Scalar, Size};
+    use opencv::core::{self, CV_8UC3, Mat, Scalar, Size};
     use opencv::imgcodecs;
+    use serde::Serialize;
+    use std::fs::File;
     use std::path::PathBuf;
 
     /// 构造纯色 BGR Mat，便于独立测试。
@@ -495,7 +671,9 @@ mod tests {
         // let roi_h = (size.height / 2).max(1) as u32;
         //
         // 这个坐标刚好是座位区域
-        let roi = Some((10, 700, 800, 620));
+        // 该 ROI 覆盖座位区域，来自人工标定。
+        // 缩进左侧以排除行号/标签，宽度收窄以减少伪检测。
+        let roi = Some((80, 700, 700, 620));
 
         let (roi_bgr, origin, dims) = crop_bgr_with_roi(&bgr, roi)?;
         let out_path =
@@ -517,6 +695,138 @@ mod tests {
         //     (hsv_size.width as u32, hsv_size.height as u32),
         //     // (roi_w, roi_h)
         // );
+        Ok(())
+    }
+
+    #[derive(Serialize)]
+    struct SeatDump {
+        row: usize,
+        col: usize,
+        state: String,
+        center_img: (f64, f64),
+        center_screen: (i32, i32),
+    }
+
+    /// 基于真实座位图提取完整座位数据并写出 JSON，便于人工检查。
+    #[test]
+    fn build_seats_from_real_image_and_dump() -> Result<()> {
+        let path: PathBuf =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/raw/movie-seats/3.png");
+        let bgr = imgcodecs::imread(path.to_str().unwrap(), imgcodecs::IMREAD_COLOR)?;
+        let size = bgr.size()?;
+        assert!(
+            size.width > 0 && size.height > 0,
+            "image should not be empty"
+        );
+
+        // 该 ROI 覆盖座位区域，来自人工标定。
+        let roi = Some((80, 700, 700, 620));
+        let roi_ctx = roi_hsv_from_bgr(&bgr, roi)?;
+        assert_eq!(roi_ctx.roi_origin, (80, 700), "ROI origin should reflect crop");
+
+        let mask = build_mask(&roi_ctx.hsv)?;
+        let boxes = contours_to_boxes(&mask)?;
+        let step = LocateSeatByColor {
+            target_row: 1,
+            target_cols: vec![1],
+            roi,
+            click: false,
+            row_tolerance_px: None,
+        };
+        let row_tol = step.pick_row_tolerance(&boxes);
+        let mut rows = cluster_rows(boxes, row_tol)?;
+        sort_rows_and_cols(&mut rows);
+
+        let scale = compute_scale_factors(roi_ctx.img_dims, roi_ctx.img_dims);
+        let seats = build_seats(&rows, roi_ctx.roi_origin, (0, 0), scale, &roi_ctx.hsv);
+        assert!(!seats.is_empty(), "should detect seats");
+
+        let mut row_counts = std::collections::BTreeMap::new();
+        for s in &seats {
+            *row_counts.entry(s.row).or_insert(0usize) += 1;
+        }
+        assert_eq!(row_counts.len(), 4, "expected 4 rows from the image ROI");
+        assert!(
+            row_counts.values().all(|&c| c == 10),
+            "each row should have 10 seats: {:?}",
+            row_counts
+        );
+
+        let dump: Vec<SeatDump> = seats
+            .iter()
+            .map(|s| SeatDump {
+                row: s.row,
+                col: s.col,
+                state: format_seat_state(s.state).to_string(),
+                center_img: s.center_img,
+                center_screen: s.center_screen,
+            })
+            .collect();
+
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/seats_dump.json");
+        let file = File::create(&out)?;
+        serde_json::to_writer_pretty(file, &dump)?;
+        assert!(out.exists(), "seat dump should be written for inspection");
+        Ok(())
+    }
+
+    /// 座位状态按中心像素的 HSV 范围分类。
+    #[test]
+    fn seat_state_from_hsv_classifies_simple_colors() -> Result<()> {
+        let available = Mat::new_size_with_default(
+            Size::new(5, 5),
+            CV_8UC3,
+            Scalar::new(0.0, 0.0, 120.0, 0.0),
+        )?;
+        let rect = core::Rect::new(0, 0, 4, 4);
+        assert_eq!(seat_state_from_hsv(&available, &rect), SeatState::Available);
+
+        let selected = Mat::new_size_with_default(
+            Size::new(5, 5),
+            CV_8UC3,
+            Scalar::new(70.0, 200.0, 200.0, 0.0),
+        )?;
+        assert_eq!(seat_state_from_hsv(&selected, &rect), SeatState::Selected);
+
+        let unavailable = Mat::new_size_with_default(
+            Size::new(5, 5),
+            CV_8UC3,
+            Scalar::new(5.0, 200.0, 200.0, 0.0),
+        )?;
+        assert_eq!(
+            seat_state_from_hsv(&unavailable, &rect),
+            SeatState::Unavailable
+        );
+
+        let unknown = Mat::new_size_with_default(
+            Size::new(5, 5),
+            CV_8UC3,
+            Scalar::new(130.0, 200.0, 200.0, 0.0),
+        )?;
+        assert_eq!(seat_state_from_hsv(&unknown, &rect), SeatState::Unknown);
+        Ok(())
+    }
+
+    /// 从聚类框生成座位结构并验证行列与坐标。
+    #[test]
+    fn build_seats_assigns_row_col_and_coordinates() -> Result<()> {
+        let rows = vec![vec![
+            core::Rect::new(0, 0, 10, 10),
+            core::Rect::new(12, 0, 10, 10),
+        ]];
+        let hsv = Mat::new_size_with_default(
+            Size::new(30, 20),
+            CV_8UC3,
+            Scalar::new(0.0, 0.0, 120.0, 0.0),
+        )?;
+        let seats = build_seats(&rows, (0, 0), (0, 0), (1.0, 1.0), &hsv);
+
+        assert_eq!(seats.len(), 2);
+        assert_eq!((seats[0].row, seats[0].col), (1, 1));
+        assert_eq!((seats[1].row, seats[1].col), (1, 2));
+        assert_eq!(seats[0].center_img, (5.0, 5.0));
+        assert_eq!(seats[1].center_img.0.round(), 17.0);
+        assert!(seats.iter().all(|s| s.is_available()));
         Ok(())
     }
 }
