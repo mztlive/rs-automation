@@ -76,7 +76,8 @@ pub fn default_pipeline(request: &BookingRequest) -> Pipeline {
             case_sensitive: false,
         })
         .step(DebugStep::new("点击了影院"))
-        .step(SleepMs(800))
+        .step(SleepMs(3000))
+        .step(MoveMouse::to_grid(GridPos::BottomRight))
         .step(ScrollThenOcrLoop {
             patterns: request.show_time.clone(),
             max_attempts: 6,
