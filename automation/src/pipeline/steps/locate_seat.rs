@@ -65,11 +65,8 @@ impl Step for LocateSeatByColor {
     fn run(&self, window: &mut WandaWindow, ctx: &mut RunCtx) -> Result<()> {
         self.validate_targets()?;
         let window_size = window.size()?;
-        let resolved_roi = self.resolve_roi(window_size)?;
-
+        let (roi_ctx, resolved_roi) = self.prepare_roi_hsv(window, ctx)?;
         println!("resolved_roi {:?}", resolved_roi);
-
-        let roi_ctx = self.prepare_roi_hsv(window, ctx, resolved_roi)?;
         let mask = build_mask(&roi_ctx.hsv)?;
         let boxes = contours_to_boxes(&mask)?;
         let row_tol = self.pick_row_tolerance(&boxes);
@@ -160,11 +157,13 @@ impl LocateSeatByColor {
         &self,
         window: &mut WandaWindow,
         ctx: &mut RunCtx,
-        roi: Option<(u32, u32, u32, u32)>,
-    ) -> Result<RoiContext> {
+    ) -> Result<(RoiContext, Option<(u32, u32, u32, u32)>)> {
         let rgba = ctx.capture_rgba(window)?;
+        let img_dims = rgba.dimensions();
+        let roi = self.resolve_roi(img_dims)?;
         let bgr = vision::rgba_to_bgr(rgba)?;
-        roi_hsv_from_bgr(&bgr, roi)
+        let roi_ctx = roi_hsv_from_bgr(&bgr, roi)?;
+        Ok((roi_ctx, roi))
     }
 
     /// 根据检测到的方块高度估算行聚类容忍度。
@@ -194,11 +193,11 @@ impl LocateSeatByColor {
         Ok(())
     }
 
-    /// 将 ROI 表达式求值为具体坐标。
-    fn resolve_roi(&self, window_size: (u32, u32)) -> Result<Option<(u32, u32, u32, u32)>> {
+    /// 将 ROI 表达式按最新截图尺寸求值为具体坐标。
+    fn resolve_roi(&self, img_dims: (u32, u32)) -> Result<Option<(u32, u32, u32, u32)>> {
         self.roi
             .as_ref()
-            .map(|expr| expr.eval(window_size))
+            .map(|expr| expr.eval(img_dims))
             .transpose()
     }
 }

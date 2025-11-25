@@ -103,8 +103,8 @@ pub fn default_pipeline(request: &BookingRequest) -> Pipeline {
         })
         .step(SleepMs(3000))
         .step(LocateSeatByColor {
-            target_row: 3,
-            target_cols: vec![6],
+            target_row: 4,
+            target_cols: vec![4, 5, 6, 7],
             // 示例裁剪范围，按实际截图可调整
             roi: Some(RectExpr::new(50, 700, window.width - 50, 530)),
             click: true,
