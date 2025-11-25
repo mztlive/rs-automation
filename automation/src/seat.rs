@@ -365,11 +365,12 @@ pub fn seat_screen_point(
     Ok((screen_x, screen_y, center_px))
 }
 
-/// 座位颜色的 HSV 范围列表：灰/绿/红。
+/// 座位颜色的 HSV 范围列表：灰/绿/红/蓝。
 ///
 /// - 灰：低饱和度，可选座位
 /// - 绿：已选座位
 /// - 红：不可选座位（包含低/高 Hue 两段以覆盖环绕区间）
+/// - 蓝：部分场景的不可选座位底色
 pub fn seat_color_ranges() -> Vec<(Scalar, Scalar)> {
     vec![
         // 灰色（可选）：低饱和度
@@ -390,6 +391,11 @@ pub fn seat_color_ranges() -> Vec<(Scalar, Scalar)> {
         (
             Scalar::new(165.0, 80.0, 120.0, 0.0),
             Scalar::new(180.0, 255.0, 255.0, 0.0),
+        ),
+        // 蓝色（不可选）：用于覆盖蓝底不可用座位
+        (
+            Scalar::new(95.0, 80.0, 90.0, 0.0),
+            Scalar::new(125.0, 255.0, 255.0, 0.0),
         ),
     ]
 }
@@ -423,6 +429,13 @@ pub fn seat_state_color_ranges() -> Vec<(SeatState, (Scalar, Scalar))> {
             (
                 Scalar::new(165.0, 80.0, 120.0, 0.0),
                 Scalar::new(180.0, 255.0, 255.0, 0.0),
+            ),
+        ),
+        (
+            SeatState::Unavailable,
+            (
+                Scalar::new(95.0, 80.0, 90.0, 0.0),
+                Scalar::new(125.0, 255.0, 255.0, 0.0),
             ),
         ),
     ]
@@ -585,6 +598,16 @@ mod tests {
         )?;
         assert_eq!(
             seat_state_from_hsv(&unavailable, &rect),
+            SeatState::Unavailable
+        );
+
+        let blue_unavailable = Mat::new_size_with_default(
+            Size::new(5, 5),
+            CV_8UC3,
+            Scalar::new(110.0, 200.0, 200.0, 0.0),
+        )?;
+        assert_eq!(
+            seat_state_from_hsv(&blue_unavailable, &rect),
             SeatState::Unavailable
         );
 
