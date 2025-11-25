@@ -4,6 +4,7 @@ mod actions;
 mod input;
 mod page;
 mod pipeline;
+mod seat;
 mod vision;
 mod window;
 
