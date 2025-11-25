@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn roi_hsv_from_bgr_real_image_roi_size_matches() -> Result<()> {
         let path: PathBuf =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/raw/movie-seats/1.png");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/raw/movie-seats/4.png");
         let bgr = imgcodecs::imread(path.to_str().unwrap(), imgcodecs::IMREAD_COLOR)?;
         let size = bgr.size()?;
         assert!(
@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn build_seats_from_real_image_and_dump() -> Result<()> {
         let path: PathBuf =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/raw/movie-seats/1.png");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/raw/movie-seats/4.png");
         let bgr = imgcodecs::imread(path.to_str().unwrap(), imgcodecs::IMREAD_COLOR)?;
         let size = bgr.size()?;
         assert!(
@@ -681,6 +681,7 @@ mod tests {
         let area = build_seat_area(&rows, roi_ctx.roi_origin, (0, 0), scale, &roi_ctx.hsv);
         assert!(area.row_count() > 0, "should detect at least 1 row");
         for r in 1..=area.row_count() {
+            println!("Row {}, col {:?}", r, area.cols_in_row(r));
             let row = area.row(r).expect("row should exist");
             assert!(!row.is_empty(), "row {} should have seats", r);
         }

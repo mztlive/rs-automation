@@ -4,9 +4,11 @@ use anyhow::{Result, anyhow};
 mod context;
 mod default;
 mod steps;
+mod value;
 pub use context::*;
 pub use default::*;
 pub use steps::*;
+pub use value::*;
 
 /// 流水线：由若干 `Step` 组成，按顺序执行，用于描述某页面下的一次完整自动化流程。
 pub struct Pipeline {
@@ -27,11 +29,11 @@ impl Pipeline {
 
     /// 依次执行流水线中的所有步骤，任一步骤错误将被向上传递。
     /// 会立刻执行一次截图，确保有内容可以往下传递
-    pub fn run(&self, window: &mut WandaWindow, ctx: &mut RunCtx) -> Result<()> {
+    pub fn run(&self, wanda_window: &mut WandaWindow, ctx: &mut RunCtx) -> Result<()> {
         let mut i = 0;
         for step in &self.steps {
             println!("[step {:02}] {}", i, step.label());
-            step.run(window, ctx)
+            step.run(wanda_window, ctx)
                 .map_err(|err| anyhow!("step {} throw error: {:?}", i, err))?;
 
             i += 1;

@@ -1,5 +1,5 @@
 use super::steps::*;
-use crate::pipeline::{BookingRequest, Pipeline};
+use crate::pipeline::{BookingRequest, Pipeline, RectExpr, window};
 use std::time::Duration;
 
 /// 统一入口流水线：内部会尝试回退到一级页面后执行正常流程。
@@ -69,7 +69,7 @@ pub fn default_pipeline(request: &BookingRequest) -> Pipeline {
         .step(MoveMouse::to_grid(GridPos::Center))
         .step(ScrollThenOcrLoop {
             patterns: request.cinema_name.clone(),
-            max_attempts: 5,
+            max_attempts: 10,
         })
         .step(ClickOcrMatch {
             patterns: request.cinema_name.clone(),
@@ -87,11 +87,26 @@ pub fn default_pipeline(request: &BookingRequest) -> Pipeline {
             case_sensitive: false,
         })
         .step(DebugStep::new("选择了场次时间"))
+        .step(SleepMs(3000))
+        .step(ConditionalStep {
+            label: "是否有确认弹窗",
+            cond: Condition::AnchorAbove {
+                page: "common",
+                anchor: "confirm-btn",
+            },
+            then_seq: ClickAnchor {
+                page: "common",
+                anchor: "confirm-btn",
+                pos: AnchorClickPos::Center,
+            },
+            else_seq: None,
+        })
+        .step(SleepMs(3000))
         .step(LocateSeatByColor {
-            target_row: 1,
-            target_cols: vec![4, 5],
+            target_row: 3,
+            target_cols: vec![6],
             // 示例裁剪范围，按实际截图可调整
-            roi: Some((60, 360, 300, 570)),
+            roi: Some(RectExpr::new(50, 700, window.width - 50, 530)),
             click: true,
             row_tolerance_px: None,
         })

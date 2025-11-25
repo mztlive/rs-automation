@@ -6,7 +6,7 @@
 //! pipeline.push(LocateSeatByColor {
 //!     target_row: 5,
 //!     target_cols: vec![7, 8],
-//!     roi: Some((0, 120, 1080, 620)),
+//!     roi: Some(RectExpr::new(0, 120, 1080, 620)),
 //!     click: true,
 //!     row_tolerance_px: None,
 //! });
@@ -14,7 +14,7 @@
 //! 参数说明：
 //! - `target_row`：要操作的行，1 为顶部第一排；越界会报错。
 //! - `target_cols`：目标列列表，1 为最左；缺失或越界同样报错。
-//! - `roi`：可选裁剪区域 `(x, y, w, h)`，默认全图；用于排除 legend/按钮以避免误识别。
+//! - `roi`：可选裁剪区域 `(x, y, w, h)`，默认全图；用于排除 legend/按钮以避免误识别，支持 `window.width - 50` 等计算。
 //! - `click`：为 `true` 时执行屏幕点击，否则仅打印定位结果；点击后会调用 `ctx.invalidate()`。
 //! - `row_tolerance_px`：行聚类的 y 容忍度，未设置时按检测到的方块高度自动估算。
 //!
@@ -30,7 +30,7 @@ use opencv::core;
 
 use crate::{
     input,
-    pipeline::{RunCtx, Step},
+    pipeline::{RectExpr, RunCtx, Step},
     vision,
     window::WandaWindow,
 };
@@ -45,13 +45,13 @@ use crate::seat::{
 /// 适合颜色相对固定的座位图（如示例截图），默认识别灰色（可选）、绿色（已选）、红色（不可选）三类方块。
 /// - `target_row`: 目标排，1 为最上方的第一排
 /// - `target_cols`: 需操作的座位列号列表，1 为最左边
-/// - `roi`: 可选的裁剪区域，避免把上方 legend 或下方按钮识别为座位；坐标基于截图像素
+/// - `roi`: 可选的裁剪区域，避免把上方 legend 或下方按钮识别为座位；坐标基于截图像素，支持 `window.width - 50` 形式的计算
 /// - `click`: 是否直接点击目标座位；否则只打印坐标
 /// - `row_tolerance_px`: 行聚类的 y 方向容忍度，不填则用检测到的座位高度估计
 pub struct LocateSeatByColor {
     pub target_row: usize,
     pub target_cols: Vec<usize>,
-    pub roi: Option<(u32, u32, u32, u32)>,
+    pub roi: Option<RectExpr>,
     pub click: bool,
     pub row_tolerance_px: Option<i32>,
 }
@@ -64,7 +64,12 @@ impl Step for LocateSeatByColor {
     /// - 任一阶段出错（如无方块、行越界）都会中断并返回错误信息
     fn run(&self, window: &mut WandaWindow, ctx: &mut RunCtx) -> Result<()> {
         self.validate_targets()?;
-        let roi_ctx = self.prepare_roi_hsv(window, ctx)?;
+        let window_size = window.size()?;
+        let resolved_roi = self.resolve_roi(window_size)?;
+
+        println!("resolved_roi {:?}", resolved_roi);
+
+        let roi_ctx = self.prepare_roi_hsv(window, ctx, resolved_roi)?;
         let mask = build_mask(&roi_ctx.hsv)?;
         let boxes = contours_to_boxes(&mask)?;
         let row_tol = self.pick_row_tolerance(&boxes);
@@ -72,7 +77,6 @@ impl Step for LocateSeatByColor {
 
         sort_rows_and_cols(&mut rows);
         let window_pos = window.position()?;
-        let window_size = window.size()?;
         let (scale_x, scale_y) = compute_scale_factors(roi_ctx.img_dims, window_size);
         let seat_area: SeatArea = build_seat_area(
             &rows,
@@ -86,6 +90,8 @@ impl Step for LocateSeatByColor {
         let seats_in_row = seat_area
             .row(self.target_row)
             .ok_or_else(|| anyhow!("目标行超出范围：第 {} 排不存在", self.target_row))?;
+
+        println!("Row 3, col {:?}", seat_area.cols_in_row(3));
 
         for col in self.target_cols.iter().copied() {
             let seat = seat_area.seat(self.target_row, col).ok_or_else(|| {
@@ -150,10 +156,15 @@ impl LocateSeatByColor {
     /// - 按给定 ROI（或整图）裁剪；范围非法时返回错误
     /// - 将 ROI 转换成 HSV，便于后续颜色掩膜
     /// - 返回 HSV 矩阵、ROI 左上角偏移以及原始截图尺寸
-    fn prepare_roi_hsv(&self, window: &mut WandaWindow, ctx: &mut RunCtx) -> Result<RoiContext> {
+    fn prepare_roi_hsv(
+        &self,
+        window: &mut WandaWindow,
+        ctx: &mut RunCtx,
+        roi: Option<(u32, u32, u32, u32)>,
+    ) -> Result<RoiContext> {
         let rgba = ctx.capture_rgba(window)?;
         let bgr = vision::rgba_to_bgr(rgba)?;
-        roi_hsv_from_bgr(&bgr, self.roi)
+        roi_hsv_from_bgr(&bgr, roi)
     }
 
     /// 根据检测到的方块高度估算行聚类容忍度。
@@ -181,5 +192,13 @@ impl LocateSeatByColor {
             ));
         }
         Ok(())
+    }
+
+    /// 将 ROI 表达式求值为具体坐标。
+    fn resolve_roi(&self, window_size: (u32, u32)) -> Result<Option<(u32, u32, u32, u32)>> {
+        self.roi
+            .as_ref()
+            .map(|expr| expr.eval(window_size))
+            .transpose()
     }
 }
