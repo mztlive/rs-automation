@@ -360,6 +360,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "automation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "enigo",
+ "fs_extra",
+ "image 0.24.9",
+ "image 0.25.8",
+ "ml",
+ "ocr",
+ "opencv",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "xcap",
+]
+
+[[package]]
 name = "av1-grain"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6790,24 +6808,6 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
-]
-
-[[package]]
-name = "wanda-automation"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "enigo",
- "fs_extra",
- "image 0.24.9",
- "image 0.25.8",
- "ml",
- "ocr",
- "opencv",
- "serde",
- "serde_json",
- "unicode-normalization",
- "xcap",
 ]
 
 [[package]]

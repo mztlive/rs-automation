@@ -14,37 +14,33 @@ use std::time::Instant;
 
 /// CLI 入口：等待用户输入 `a`，随后激活目标窗口并运行页面流水线。
 fn main() -> Result<()> {
-    let mut args = env::args().skip(1);
-    let movie_name = args
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("缺少参数：影片名称"))?;
-    let show_date = args
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("缺少参数：观影日期"))?;
-    let cinema_name = args
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("缺少参数：影院名称"))?;
-    let show_time = args
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("缺少参数：场次时间"))?;
+    let args: Vec<String> = env::args().skip(1).collect();
+    let (pipeline_name, offset) = match args.len() {
+        4 => ("wanda".to_string(), 0),
+        5 => (args[0].clone(), 1),
+        _ => {
+            anyhow::bail!(
+                "参数数量不正确。用法：<pipeline 可选> <影片名称> <观影日期> <影院名称> <场次时间>"
+            )
+        }
+    };
+    let movie_name = args[offset].clone();
+    let show_date = args[offset + 1].clone();
+    let cinema_name = args[offset + 2].clone();
+    let show_time = args[offset + 3].clone();
 
     println!(
-        "将查找影片 [{}]，日期 [{}]，影院 [{}]，场次 [{}]",
-        movie_name, show_date, cinema_name, show_time
+        "使用 pipeline [{}]，将查找影片 [{}]，日期 [{}]，影院 [{}]，场次 [{}]",
+        pipeline_name, movie_name, show_date, cinema_name, show_time
     );
 
     let start = Instant::now();
-    page::init("assets/page.json")?;
-    let mut window = window::WandaWindow::new();
-    window.find_window()?;
-
-    window.activate()?;
-
     let booking = pipeline::BookingRequest::new(movie_name, show_date, cinema_name, show_time);
+    let pipeline = pipeline::resolve_pipeline(&pipeline_name, &booking)?;
+    println!("加载页面配置 [{}]", pipeline.page_config_path);
     let mut ctx = pipeline::RunCtx::with_booking_request(booking.clone());
 
-    let pipeline = pipeline::default_pipeline(&booking);
-    if let Err(e) = pipeline.run(&mut window, &mut ctx) {
+    if let Err(e) = pipeline.run(&mut ctx) {
         anyhow::bail!("执行页面管线失败: {e:?}");
     }
 

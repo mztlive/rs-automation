@@ -1,11 +1,23 @@
 use super::steps::*;
-use crate::pipeline::{BookingRequest, Pipeline, RectExpr, window};
+use crate::pipeline::{BookingRequest, Pipeline, PipelineBundle, RectExpr, window};
+use crate::window::WindowSelector;
 use std::time::Duration;
 
+/// Wanda 小程序流水线：绑定自身的窗口选择规则与页面配置。
+pub fn wanda_pipeline(request: &BookingRequest) -> PipelineBundle {
+    PipelineBundle::new(
+        "wanda",
+        "assets/page.json",
+        WindowSelector::new()
+            .with_title_keywords(["万达"])
+            .with_app_names(["WeChat", "微信"]),
+        wanda_steps(request),
+    )
+}
+
 /// 统一入口流水线：内部会尝试回退到一级页面后执行正常流程。
-pub fn default_pipeline(request: &BookingRequest) -> Pipeline {
+fn wanda_steps(request: &BookingRequest) -> Pipeline {
     Pipeline::new()
-        .step(ActivateWindow)
         .step(LoopUntil {
             label: "ensure-first-level",
             cond: Condition::AnchorAbove {

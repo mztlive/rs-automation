@@ -5,8 +5,13 @@ use serde::Deserialize;
 use std::{cell::RefCell, fs, path::PathBuf};
 use xcap::image::RgbaImage;
 
+struct RecognizerHandle {
+    path: String,
+    recognizer: PageRecognizer,
+}
+
 thread_local! {
-    static PAGE_RECOGNIZER: RefCell<Option<PageRecognizer>> = RefCell::new(None);
+    static PAGE_RECOGNIZER: RefCell<Option<RecognizerHandle>> = RefCell::new(None);
 }
 
 /// 页面分类结果：要么未知，要么携带命中的页面名称。
@@ -166,9 +171,17 @@ fn bool_true() -> bool {
 /// 初始化线程本地模型（幂等），供 `classify` 与 `WaitPage` 共享。
 pub fn init(path: &str) -> Result<()> {
     PAGE_RECOGNIZER.with(|cell| {
-        if cell.borrow().is_none() {
+        let mut handle = cell.borrow_mut();
+        let needs_reload = handle
+            .as_ref()
+            .map(|holder| holder.path != path)
+            .unwrap_or(true);
+        if needs_reload {
             let recognizer = PageRecognizer::from_path(path)?;
-            *cell.borrow_mut() = Some(recognizer);
+            *handle = Some(RecognizerHandle {
+                path: path.to_string(),
+                recognizer,
+            });
         }
         Ok(())
     })
@@ -180,7 +193,7 @@ fn with_recognizer<R>(f: impl FnOnce(&PageRecognizer) -> Result<R>) -> Result<R>
         let recognizer = borrow
             .as_ref()
             .ok_or_else(|| anyhow!("页面识别模型尚未初始化，请先调用 page::init"))?;
-        f(recognizer)
+        f(&recognizer.recognizer)
     })
 }
 

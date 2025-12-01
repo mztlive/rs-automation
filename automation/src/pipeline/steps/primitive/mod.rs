@@ -39,6 +39,7 @@ pub mod text_match;
 pub mod wait_page;
 pub mod wait_template;
 
+#[allow(unused_imports)]
 pub use activate_window::ActivateWindow;
 pub use click_anchor::{AnchorClickPos, ClickAnchor};
 pub use click_ocr_match::ClickOcrMatch;

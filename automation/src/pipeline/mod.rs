@@ -1,4 +1,5 @@
-use crate::window::WandaWindow;
+use crate::page;
+use crate::window::{WandaWindow, WindowSelector};
 use anyhow::{Result, anyhow};
 
 mod context;
@@ -8,7 +9,50 @@ mod wanda;
 pub use context::*;
 pub use steps::*;
 pub use value::*;
+#[allow(unused_imports)]
 pub use wanda::*;
+
+/// 将流水线步骤与窗口/页面配置打包，方便按名称选择执行。
+pub struct PipelineBundle {
+    pub name: String,
+    pub page_config_path: String,
+    pub window_selector: WindowSelector,
+    pub pipeline: Pipeline,
+}
+
+impl PipelineBundle {
+    pub fn new(
+        name: impl Into<String>,
+        page_config_path: impl Into<String>,
+        window_selector: WindowSelector,
+        pipeline: Pipeline,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            page_config_path: page_config_path.into(),
+            window_selector,
+            pipeline,
+        }
+    }
+
+    /// 初始化页面识别模型、查找并激活窗口，然后运行流水线步骤。
+    pub fn run(&self, ctx: &mut RunCtx) -> Result<()> {
+        println!("运行 pipeline [{}]", self.name);
+        page::init(&self.page_config_path)?;
+        let mut wanda_window = WandaWindow::new();
+        wanda_window.find_window(&self.window_selector)?;
+        wanda_window.activate()?;
+        self.pipeline.run(&mut wanda_window, ctx)
+    }
+}
+
+/// 根据名字选择流水线，便于扩展不同场景。
+pub fn resolve_pipeline(name: &str, request: &BookingRequest) -> Result<PipelineBundle> {
+    match name {
+        "wanda" | "default" => Ok(wanda::wanda_pipeline(request)),
+        other => Err(anyhow!("未知 pipeline：{other}")),
+    }
+}
 
 /// 流水线：由若干 `Step` 组成，按顺序执行，用于描述某页面下的一次完整自动化流程。
 pub struct Pipeline {
