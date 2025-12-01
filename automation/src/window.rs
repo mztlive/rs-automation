@@ -21,6 +21,11 @@ impl WandaWindow {
         }
 
         let windows = Window::all()?;
+
+        windows
+            .iter()
+            .for_each(|item| println!("window: {}", item.title().unwrap()));
+
         let wand_window = windows
             .iter()
             .find(|w| match w.title() {
