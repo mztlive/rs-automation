@@ -4,10 +4,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow};
 use burn::{
-    backend::{
-        Autodiff,
-        wgpu::{self, RuntimeOptions, graphics::Metal},
-    },
+    backend::Autodiff,
     data::dataloader::{DataLoader, DataLoaderBuilder},
     data::dataset::Dataset as _,
     module::{AutodiffModule, Module},
@@ -23,8 +20,24 @@ use std::{
     sync::Arc,
 };
 
-type InnerBackend = wgpu::Metal<f32>;
+#[cfg(target_os = "windows")]
+use burn::backend::ndarray::NdArray;
+#[cfg(not(target_os = "windows"))]
+use burn::backend::wgpu::{self, graphics::AutoGraphicsApi, RuntimeOptions, Wgpu};
+
+#[cfg(not(target_os = "windows"))]
+type InnerBackend = Wgpu<f32>;
+#[cfg(target_os = "windows")]
+type InnerBackend = NdArray<f32>;
 type TrainBackend = Autodiff<InnerBackend>;
+
+#[cfg(not(target_os = "windows"))]
+fn init_backend(device: &<TrainBackend as Backend>::Device) {
+    let _ = wgpu::init_setup::<AutoGraphicsApi>(device, RuntimeOptions::default());
+}
+
+#[cfg(target_os = "windows")]
+fn init_backend(_: &<TrainBackend as Backend>::Device) {}
 
 /// 训练时的超参数。
 #[derive(Clone, Debug)]
@@ -101,7 +114,7 @@ pub fn train(config: &TrainConfig) -> Result<TrainingArtifacts> {
     }
 
     let device = <TrainBackend as Backend>::Device::default();
-    let _ = wgpu::init_setup::<Metal>(&device, RuntimeOptions::default());
+    init_backend(&device);
     let train_len = train_dataset.len();
     let val_len = val_dataset.len();
     let (height, width) = train_dataset.image_size();

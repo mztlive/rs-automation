@@ -1,7 +1,6 @@
 #![recursion_limit = "256"]
 
 use anyhow::{Context, Result};
-use burn::backend::wgpu::{self, RuntimeOptions, graphics::Metal};
 use burn::module::Module;
 use burn::record::{DefaultFileRecorder, FullPrecisionSettings};
 use burn::tensor::{Tensor, TensorData, activation::softmax, backend::Backend};
@@ -10,7 +9,20 @@ use image::DynamicImage;
 use ml::model::PageNet;
 use std::{fs::File, path::PathBuf};
 
-type InferenceBackend = wgpu::Metal<f32>;
+#[cfg(target_os = "windows")]
+type InferenceBackend = burn::backend::ndarray::NdArray<f32>;
+#[cfg(not(target_os = "windows"))]
+use burn::backend::wgpu::{self, graphics::AutoGraphicsApi, RuntimeOptions, Wgpu};
+#[cfg(not(target_os = "windows"))]
+type InferenceBackend = Wgpu<f32>;
+
+#[cfg(not(target_os = "windows"))]
+fn init_backend(device: &<InferenceBackend as Backend>::Device) {
+    let _ = wgpu::init_setup::<AutoGraphicsApi>(device, RuntimeOptions::default());
+}
+
+#[cfg(target_os = "windows")]
+fn init_backend(_: &<InferenceBackend as Backend>::Device) {}
 
 #[derive(Parser, Debug)]
 #[command(name = "ml-infer", about = "加载训练好的页面分类模型并进行推理")]
@@ -40,7 +52,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let device = <InferenceBackend as Backend>::Device::default();
-    let _ = wgpu::init_setup::<Metal>(&device, RuntimeOptions::default());
+    init_backend(&device);
 
     let labels = load_labels(args.model_dir.join("labels.json"))?;
 
