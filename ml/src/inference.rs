@@ -8,7 +8,10 @@ use image::{DynamicImage, RgbImage, RgbaImage, imageops::FilterType};
 use std::{fs::File, path::PathBuf};
 
 /// Metal + WGPU 后端，用于 macOS 上的推理。
-type InferenceBackend = wgpu::Metal<f32>;
+// type InferenceBackend = wgpu::Metal<f32>;
+//
+/// Windows CPU推理
+type InferenceBackend = burn::backend::ndarray::NdArray<f32>;
 
 /// 模型加载配置：包含权重/标签路径与预处理超参数。
 #[derive(Debug, Clone)]
@@ -43,7 +46,7 @@ impl PageClassifier {
     /// 根据给定配置加载模型与标签映射。
     pub fn load(config: &ModelConfig) -> Result<Self> {
         let device = <InferenceBackend as Backend>::Device::default();
-        let _ = wgpu::init_setup::<Metal>(&device, RuntimeOptions::default());
+        // let _ = wgpu::init_setup::<Metal>(&device, RuntimeOptions::default());
 
         let labels_file = File::open(&config.labels_path)
             .with_context(|| format!("无法读取标签文件：{}", config.labels_path.display()))?;
